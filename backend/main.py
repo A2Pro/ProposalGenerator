@@ -24,12 +24,11 @@ load_dotenv()
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Store active sessions
+
 active_sessions = {}
 TEMP_DIR = tempfile.mkdtemp()
 
 def get_first_five_links():
-    """Scrape sam.gov for the first 5 contract opportunities"""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
@@ -45,7 +44,7 @@ def get_first_five_links():
             base_url = "https://sam.gov"
             first_5_links = [base_url + link['href'] for link in opp_links[:5]]
             
-            # Also extract titles for better display
+            
             link_data = []
             for link in opp_links[:5]:
                 title = link.get_text(strip=True) or "Contract Opportunity"
@@ -63,7 +62,6 @@ def get_first_five_links():
             browser.close()
 
 def get_contract_content(link):
-    """Scrape contract details from a specific sam.gov link"""
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
@@ -80,12 +78,11 @@ def get_contract_content(link):
             browser.close()
 
 def parse_contract_from_html(html_content):
-    """Parse contract details from HTML content"""
     soup = BeautifulSoup(html_content, 'html.parser')
     
     response = "CONTRACT OPPORTUNITY DETAILS\n\n"
     
-    # Notice ID
+    
     notice_id_elem = soup.find('div', id='header-solicitation-number')
     if notice_id_elem:
         description = notice_id_elem.find('div', class_='description')
@@ -93,7 +90,7 @@ def parse_contract_from_html(html_content):
             notice_id = description.get_text(strip=True)
             response += f"Notice ID: {notice_id}\n\n"
     
-    # General Information
+    
     response += "GENERAL INFORMATION\n"
     general_info_mapping = {
         'general-type': 'Contract Opportunity Type',
@@ -115,7 +112,7 @@ def parse_contract_from_html(html_content):
             if text and text.lower() != 'none':
                 response += f"{label}: {text}\n"
     
-    # Classification
+    
     response += "\nCLASSIFICATION\n"
     classification_mapping = {
         'classification-original-set-aside': 'Original Set Aside',
@@ -135,7 +132,7 @@ def parse_contract_from_html(html_content):
             if text:
                 response += f"{label}: {text}\n"
     
-    # Contracting Office
+    
     response += "\nCONTRACTING OFFICE ADDRESS\n"
     contracting_office_div = soup.find('div', id='-contracting-office')
     if contracting_office_div:
@@ -145,7 +142,7 @@ def parse_contract_from_html(html_content):
             if address_line:
                 response += f'{address_line}\n'
     
-    # Primary Contact
+    
     response += "\nPRIMARY POINT OF CONTACT\n"
     primary_poc_div = soup.find('div', id='contact-primary-poc')
     if primary_poc_div:
@@ -173,20 +170,19 @@ def parse_contract_from_html(html_content):
     return response
 
 def create_vector_store_from_content(content, session_id):
-    """Create vector store from contract content"""
     try:
-        # Split content into chunks
+        
         text_splitter = RecursiveCharacterTextSplitter(
             chunk_size=1000,
             chunk_overlap=200,
             length_function=len
         )
         
-        # Create document from content
+        
         doc = Document(page_content=content, metadata={"source": "contract"})
         chunks = text_splitter.split_documents([doc])
         
-        # Create vector store
+        
         collection_name = f"contract-{session_id[:8]}"
         persist_directory = os.path.join(TEMP_DIR, collection_name)
         os.makedirs(persist_directory, exist_ok=True)
@@ -207,11 +203,10 @@ def create_vector_store_from_content(content, session_id):
         raise
 
 def setup_rag_chain(vector_store):
-    """Setup RAG chain for contract chat"""
     llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.2)
     retriever = vector_store.as_retriever(search_kwargs={"k": 3})
     
-    # Contextualize question prompt
+    
     contextualize_q_system_prompt = (
         "Given a chat history and the latest user question "
         "which might reference context in the chat history, "
@@ -230,7 +225,7 @@ def setup_rag_chain(vector_store):
         llm, retriever, contextualize_q_prompt
     )
     
-    # QA prompt
+    
     qa_system_prompt = (
         "You are a helpful AI assistant that helps with government contract proposals. "
         "Use the contract information provided to answer questions and help generate "
@@ -257,7 +252,6 @@ def health_check():
 
 @app.route('/api/contracts/suggested', methods=['GET'])
 def get_suggested_contracts():
-    """Get suggested contract links from sam.gov"""
     try:
         links = get_first_five_links()
         return jsonify({'contracts': links})
@@ -266,7 +260,6 @@ def get_suggested_contracts():
 
 @app.route('/api/contracts/process', methods=['POST'])
 def process_contract():
-    """Process a contract link and start a chat session"""
     data = request.json
     
     if not data or 'url' not in data:
@@ -275,19 +268,19 @@ def process_contract():
     url = data['url']
     
     try:
-        # Get contract content
+        
         contract_content = get_contract_content(url)
         if not contract_content:
             return jsonify({'error': 'Failed to extract contract content'}), 400
         
-        # Create session
+        
         session_id = str(uuid.uuid4())
         
-        # Create vector store and RAG chain
+        
         vector_store, persist_directory = create_vector_store_from_content(contract_content, session_id)
         rag_chain = setup_rag_chain(vector_store)
         
-        # Store session
+        
         active_sessions[session_id] = {
             'rag_chain': rag_chain,
             'vector_store': vector_store,
@@ -297,7 +290,7 @@ def process_contract():
             'chat_history': []
         }
         
-        # Generate initial proposal outline
+        
         initial_prompt = ("Generate a comprehensive fake bid/proposal outline from this contract information. "
                          "Include executive summary points, technical approach sections, key deliverables, "
                          "rough timeline, and any compliance requirements mentioned.")
@@ -309,7 +302,7 @@ def process_contract():
         
         initial_outline = response.get("answer", "")
         
-        # Add to chat history
+        
         active_sessions[session_id]['chat_history'].extend([
             {"type": "human", "content": "Please generate a proposal outline for this contract."},
             {"type": "ai", "content": initial_outline}
@@ -328,7 +321,6 @@ def process_contract():
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    """Chat with the contract assistant"""
     data = request.json
     
     if not data or 'session_id' not in data or 'message' not in data:
@@ -345,12 +337,12 @@ def chat():
         rag_chain = session['rag_chain']
         chat_history = session['chat_history']
         
-        # Format chat history for LangChain
+        
         formatted_chat_history = []
         for msg in chat_history:
             formatted_chat_history.append(msg)
         
-        # Get response
+        
         response = rag_chain.invoke({
             "input": user_message,
             "chat_history": formatted_chat_history
@@ -359,14 +351,14 @@ def chat():
         answer = response.get("answer", "")
         source_docs = response.get("context", [])
         
-        # Extract sources
+        
         sources = []
         if source_docs:
             for doc in source_docs[:3]:
                 content_preview = doc.page_content[:100] + "..." if len(doc.page_content) > 100 else doc.page_content
                 sources.append(content_preview)
         
-        # Update chat history
+        
         chat_history.extend([
             {"type": "human", "content": user_message},
             {"type": "ai", "content": answer}
@@ -385,7 +377,6 @@ def chat():
 
 @app.route('/api/highlight', methods=['POST'])
 def handle_highlight():
-    """Handle text highlighting and source questions"""
     data = request.json
     
     if not data or 'session_id' not in data or 'highlighted_text' not in data:
@@ -401,12 +392,12 @@ def handle_highlight():
         session = active_sessions[session_id]
         contract_content = session['contract_content']
         
-        # Find the highlighted text in the contract content
+        
         if highlighted_text in contract_content:
-            # Find the section containing this text
+            
             start_index = contract_content.find(highlighted_text)
             
-            # Get some context around the highlighted text
+            
             context_start = max(0, start_index - 200)
             context_end = min(len(contract_content), start_index + len(highlighted_text) + 200)
             context = contract_content[context_start:context_end]
@@ -429,7 +420,6 @@ def handle_highlight():
 
 @app.route('/api/sessions/<session_id>', methods=['DELETE'])
 def end_session(session_id):
-    """End a session and cleanup resources"""
     if session_id not in active_sessions:
         return jsonify({'error': 'Invalid session ID'}), 404
     
@@ -437,7 +427,7 @@ def end_session(session_id):
         session = active_sessions[session_id]
         persist_directory = session['persist_directory']
         
-        # Cleanup vector store directory
+        
         if os.path.exists(persist_directory):
             shutil.rmtree(persist_directory)
         
@@ -451,7 +441,6 @@ def end_session(session_id):
 
 @app.route('/api/sessions/<session_id>/history', methods=['GET'])
 def get_chat_history(session_id):
-    """Get chat history for a session"""
     if session_id not in active_sessions:
         return jsonify({'error': 'Invalid session ID'}), 404
     
